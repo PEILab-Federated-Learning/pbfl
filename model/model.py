@@ -1,0 +1,123 @@
+import os.path as osp
+import pickle
+from functools import partial
+import torch
+from torch import nn
+from torch.cuda.amp import GradScaler
+from .clip import load_clip_to_cpu
+from .prompt import CustomCLIP
+from .optimizers.optimizers import build_optimizer
+from .schedulers.lr_schedulers import build_lr_scheduler
+
+
+class Model:
+    def __init__(self, cfg, dataset):
+        self.cfg = cfg
+        if torch.cuda.is_available() and cfg.USE_CUDA:
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
+        self.max_epoch = cfg.OPTIM.MAX_EPOCH
+        self.output_dir = cfg.OUTPUT_DIR
+        self.dataset = dataset
+        self.clip_model = self.load_clip()
+        
+        
+    def load_clip(self):
+        cfg = self.cfg
+        if cfg.VERBOSE:
+            print(f"Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})")
+        clip_model = load_clip_to_cpu(cfg)
+        
+        if cfg.PROMPT.PREC == "fp32" or cfg.PROMPT.PREC == "amp":
+            # CLIP's default precision is fp16
+            clip_model.float()
+        return clip_model
+    
+    
+    def load_checkpoint(self, fpath):
+        r"""Load checkpoint.
+        ``UnicodeDecodeError`` can be well handled, which means
+        python2-saved files can be read from python3.
+        Args:
+            fpath (str): path to checkpoint.
+        Returns:
+            dict
+        Examples::
+            >>> fpath = 'log/my_model/model.pth.tar-10'
+            >>> checkpoint = load_checkpoint(fpath)
+        """
+        if fpath is None:
+            raise ValueError("File path is None")
+        if not osp.exists(fpath):
+            raise FileNotFoundError('File is not found at "{}"'.format(fpath))
+        map_location = None if torch.cuda.is_available() else "cpu"
+        try:
+            checkpoint = torch.load(fpath, map_location=map_location)
+        except UnicodeDecodeError:
+            pickle.load = partial(pickle.load, encoding="latin1")
+            pickle.Unpickler = partial(pickle.Unpickler, encoding="latin1")
+            checkpoint = torch.load(fpath, pickle_module=pickle, map_location=map_location)
+        except Exception:
+            print('Unable to load checkpoint from "{}"'.format(fpath))
+            raise
+
+        return checkpoint
+    
+    
+    def load_model_weights(self, model, weight_path):
+        cfg = self.cfg
+        if not weight_path:
+            if cfg.VERBOSE:
+                print("Note that load_model() is skipped as no model is given")
+            return
+
+        if not osp.exists(weight_path):
+            raise FileNotFoundError('Model not found at "{}"'.format(weight_path))
+        checkpoint = self.load_checkpoint(weight_path)
+        state_dict = checkpoint["state_dict"]
+
+        # Ignore fixed token vectors
+        if "token_prefix" in state_dict:
+            del state_dict["token_prefix"]
+
+        if "token_suffix" in state_dict:
+            del state_dict["token_suffix"]
+        if cfg.VERBOSE:
+            print("Loading model weights from {}".format(weight_path))
+        # set strict=False
+        model.load_state_dict(state_dict, strict=False)
+    
+
+    def build_model(self, weight_path=None):
+        cfg = self.cfg
+        classnames = self.dataset.classnames
+        clip_model = self.clip_model
+        # Building custom CLIP
+        model = CustomCLIP(cfg, classnames, clip_model)
+
+        # Turning off gradients in both the image and the text encoder
+        for name, param in model.named_parameters():
+            if "prompt_learner" not in name:
+                param.requires_grad_(False)
+
+        if weight_path is not None:
+            self.load_model_weights(model.prompt_learner, weight_path)
+
+        model.to(self.device)
+        # NOTE: only give prompt_learner to the optimizer
+        optim = build_optimizer(model.prompt_learner, cfg.OPTIM)
+        sched = build_lr_scheduler(optim, cfg.OPTIM)
+        scaler = GradScaler() if cfg.PROMPT.PREC == "amp" else None
+
+        # Note that multi-gpu training could be slow because CLIP's size is
+        # big, which slows down the copy operation in DataParallel
+        device_count = torch.cuda.device_count()
+        if device_count > 1:
+            if cfg.VERBOSE:
+                print(f"Multiple GPUs detected (n_gpus={device_count}), use all of them!")
+            model = nn.DataParallel(model)
+            
+        return model.prompt_learner, optim, sched, scaler
+            
+    
