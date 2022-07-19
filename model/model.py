@@ -4,12 +4,13 @@ import pickle
 from functools import partial
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler
+from torch.nn import functional as F
+from torch.cuda.amp import GradScaler, autocast
 from .clip import load_clip_to_cpu
 from .prompt import CustomCLIP
 from .optimizers.optimizers import build_optimizer
 from .schedulers.lr_schedulers import build_lr_scheduler
-
+from .metrics.accuracy import compute_accuracy
                 
 
 class Model:
@@ -156,7 +157,7 @@ class Model:
                 print(f"Multiple GPUs detected (n_gpus={device_count}), use all of them!")
             model = nn.DataParallel(model)
             
-        return model.prompt_learner, optim, sched, scaler
+        return model, optim, sched, scaler
     
     
     def init_model(self, save_path):
@@ -168,4 +169,55 @@ class Model:
     
         self.save_model(model.prompt_learner, save_path)
         
+    
+    def parse_batch_train(self, batch):
+        input_x = batch["img"]
+        label = batch["label"]
+        input_x = input_x.to(self.device)
+        label = label.to(self.device)
+        return input_x, label
+        
+    
+    def train_model(self, client_dataloader, model, optim, sched, scaler):
+        """Local training loops."""
+        cfg = self.cfg
+        model.train()
+        num_batches = len(client_dataloader)
+        for epoch in range(self.max_epoch):
+            for batch_idx, batch in enumerate(client_dataloader):
+                image, label = self.parse_batch_train(batch)
+                if cfg.PROMPT.PREC == "amp":
+                    with autocast():
+                        output = model(image)
+                        loss = F.cross_entropy(output, label)
+                    optim.zero_grad()
+                    scaler.scale(loss).backward()
+                    scaler.step(optim)
+                    scaler.update()
+                else:
+                    output = model(image)
+                    loss = F.cross_entropy(output, label)
+                    optim.zero_grad()
+                    if not torch.isfinite(loss).all():
+                        raise FloatingPointError("Loss is infinite or NaN!")
+                    loss.backward()
+                    optim.step()
+                if (batch_idx + 1) == num_batches:
+                    sched.step()  # update lr
+                loss_value = loss.item()
+                acc = compute_accuracy(output, label)[0].item()
+                
+                #log
+                meet_freq = (batch_idx + 1) % cfg.TRAIN.PRINT_FREQ == 0
+                only_few_batches = num_batches < cfg.TRAIN.PRINT_FREQ
+                if meet_freq or only_few_batches:
+                    info = []
+                    info += [f"epoch [{epoch + 1}/{self.max_epoch}]"]
+                    info += [f"batch [{batch_idx + 1}/{num_batches}]"]
+                    info += [f"loss {loss_value}"]
+                    info += [f"acc {acc}"]
+                    info += [f"lr {optim.param_groups[0]['lr']:.4e}"]
+                    print(" ".join(info))
+                
+        return model
     

@@ -67,11 +67,18 @@ class FL:
             print('Starting fl client', '['+str(client_id+1)+'/'+str(cfg.FL.CLIENTS_TOTAL)+']', '...')
             
             client_dataloader = self.clients_dataloader[client_id]
+            print("client", str(client_id+1), "dataset done ...")
             
             weight_file = os.path.join(self.weight_dir, f"model_round{round_id}_seed{self.seed}.pth.tar")
-            self.model.build_model(weight_file)
+            model, optim, sched, scaler = self.model.build_model(weight_file)
+            print("client", str(client_id+1), "model done ...")
 
-    def run_fl(self):     
+            self.model.train_model(client_dataloader, model, optim, sched, scaler)
+            print("client", str(client_id+1), "train done ...")
+
+
+
+    def run_fl(self): 
         self.before_train()
         self.run_train()
         
