@@ -31,6 +31,12 @@ class FL:
             
         self.model = Model(cfg, self.dataset)
         print("model (clip) done ...")
+        
+        self.weight_dir = os.path.join(self.output_dir, cfg.MODEL.WEIGHT_PATH)
+        mkdir_if_missing(self.weight_dir)
+        init_weights = os.path.join(self.weight_dir, f"model_round0_seed{self.seed}.pth.tar")
+        self.model.init_model(init_weights)
+        print("init weights done ...")
 
     def run_train(self):
         print("run_train starting ...")
@@ -61,13 +67,9 @@ class FL:
             print('Starting fl client', '['+str(client_id+1)+'/'+str(cfg.FL.CLIENTS_TOTAL)+']', '...')
             
             client_dataloader = self.clients_dataloader[client_id]
-            if round_id == 0:
-                self.model.build_model()
-            else:
-                weight_dir = os.path.join(self.output_dir, cfg.MODEL.WEIGHT_PATH)
-                mkdir_if_missing(weight_dir)
-                weight_file = os.path.join(weight_dir, f"model_round{round_id-1}_seed{self.seed}.pth.tar")
-                self.model.build_model(weight_file)
+            
+            weight_file = os.path.join(self.weight_dir, f"model_round{round_id}_seed{self.seed}.pth.tar")
+            self.model.build_model(weight_file)
 
     def run_fl(self):     
         self.before_train()

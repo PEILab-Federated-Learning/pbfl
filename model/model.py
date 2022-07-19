@@ -1,4 +1,5 @@
 import os.path as osp
+from collections import OrderedDict
 import pickle
 from functools import partial
 import torch
@@ -9,6 +10,7 @@ from .prompt import CustomCLIP
 from .optimizers.optimizers import build_optimizer
 from .schedulers.lr_schedulers import build_lr_scheduler
 
+                
 
 class Model:
     def __init__(self, cfg, dataset):
@@ -88,8 +90,45 @@ class Model:
         # set strict=False
         model.load_state_dict(state_dict, strict=False)
     
+    
+    def save_checkpoint(self, state, save_dir, remove_module_from_keys=True):
+        r"""Save checkpoint.
+        Args:
+            state (dict): dictionary.
+            save_dir (str): directory to save checkpoint.
+            remove_module_from_keys (bool, optional): whether to remove "module."
+                from layer names. Default is True.
+        Examples::
+            >>> state = {
+            >>>     'state_dict': model.state_dict(),
+            >>>     'epoch': 10,
+            >>>     'optimizer': optimizer.state_dict()
+            >>> }
+            >>> save_checkpoint(state, 'log/my_model')
+        """
+        cfg = self.cfg
 
-    def build_model(self, weight_path=None):
+        if remove_module_from_keys:
+            # remove 'module.' in state_dict's keys
+            state_dict = state["state_dict"]
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                if k.startswith("module."):
+                    k = k[7:]
+                new_state_dict[k] = v
+            state["state_dict"] = new_state_dict
+
+        torch.save(state, save_dir)
+        if cfg.VERBOSE:
+            print(f"Checkpoint saved to {save_dir}")
+    
+    
+    def save_model(self, model, directory):
+        model_dict = model.state_dict()
+        self.save_checkpoint({"state_dict": model_dict}, directory)
+
+
+    def build_model(self, weight_path):
         cfg = self.cfg
         classnames = self.dataset.classnames
         clip_model = self.clip_model
@@ -101,9 +140,8 @@ class Model:
             if "prompt_learner" not in name:
                 param.requires_grad_(False)
 
-        if weight_path is not None:
-            self.load_model_weights(model.prompt_learner, weight_path)
-
+        self.load_model_weights(model.prompt_learner, weight_path)
+        
         model.to(self.device)
         # NOTE: only give prompt_learner to the optimizer
         optim = build_optimizer(model.prompt_learner, cfg.OPTIM)
@@ -119,5 +157,15 @@ class Model:
             model = nn.DataParallel(model)
             
         return model.prompt_learner, optim, sched, scaler
-            
+    
+    
+    def init_model(self, save_path):
+        cfg = self.cfg
+        classnames = self.dataset.classnames
+        clip_model = self.clip_model
+        # Building custom CLIP
+        model = CustomCLIP(cfg, classnames, clip_model)
+    
+        self.save_model(model.prompt_learner, save_path)
+        
     
