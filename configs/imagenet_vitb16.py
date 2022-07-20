@@ -7,10 +7,6 @@ _C = CN()
 _C.VERSION = 1
 # Directory to save the output files (like log.txt and model weights)
 _C.OUTPUT_DIR = "./output"
-# Path to a directory where the files were saved previously
-_C.RESUME = ""
-# Set seed to negative value to randomize everything
-# Set seed to positive value to use a fixed seed
 _C.SEED = 1234
 _C.USE_CUDA = True
 # Print detailed information
@@ -61,15 +57,10 @@ _C.INPUT.GN_STD = 0.15
 ###########################
 _C.DATASET = CN()
 # Directory where datasets are stored
-_C.DATASET.ROOT = "../../dataset"
+_C.DATASET.ROOT = "../dataset"
 _C.DATASET.NAME = "imagenet"
 # Number of images per class
 _C.DATASET.NUM_SHOTS = 2
-# CIFAR-10/100-C's corruption type and intensity level
-_C.DATASET.CIFAR_C_TYPE = ""
-_C.DATASET.CIFAR_C_LEVEL = 1
-# all, base or new
-_C.DATASET.SUBSAMPLE_CLASSES = "all"
 
 ###########################
 # Dataloader
@@ -155,9 +146,6 @@ _C.OPTIM.WARMUP_RECOUNT = True
 # Train (local)
 ###########################
 _C.TRAIN = CN()
-# How often (epoch) to save model during training
-# Set to 0 or negative value to only save the last one
-_C.TRAIN.CHECKPOINT_FREQ = 0
 # How often (batch) to print training information
 _C.TRAIN.PRINT_FREQ = 5
 
@@ -165,16 +153,9 @@ _C.TRAIN.PRINT_FREQ = 5
 # Test
 ###########################
 _C.TEST = CN()
-_C.TEST.EVALUATOR = "Classification"
+# Which model to test after training ("last_round" or any round_id)
+_C.TEST.TEST_MODEL = "last_round"
 _C.TEST.PER_CLASS_RESULT = False
 # Compute confusion matrix, which will be saved
 # to $OUTPUT_DIR/cmat.pt
 _C.TEST.COMPUTE_CMAT = False
-# If NO_TEST=True, no testing will be conducted
-_C.TEST.NO_TEST = False
-# Use test or val set for FINAL evaluation
-_C.TEST.SPLIT = "test"
-# Which model to test after training (last_step or best_val)
-# If best_val, evaluation is done every epoch (if val data
-# is unavailable, test data will be used)
-_C.TEST.FINAL_MODEL = "last_step"

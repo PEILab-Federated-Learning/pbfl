@@ -5,5 +5,6 @@ from .metrics import *
 from .model import *
 from .clip import *
 from .prompt import *
+from .evaluator import *
 
 

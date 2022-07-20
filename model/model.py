@@ -6,15 +6,17 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.cuda.amp import GradScaler, autocast
+from tqdm import tqdm
 from .clip import load_clip_to_cpu
 from .prompt import CustomCLIP
 from .optimizers.optimizers import build_optimizer
 from .schedulers.lr_schedulers import build_lr_scheduler
 from .metrics.accuracy import compute_accuracy
+from .evaluator import Classification
                 
 
 class Model:
-    def __init__(self, cfg, dataset):
+    def __init__(self, cfg, classnames):
         self.cfg = cfg
         if torch.cuda.is_available() and cfg.USE_CUDA:
             self.device = torch.device("cuda")
@@ -22,7 +24,7 @@ class Model:
             self.device = torch.device("cpu")
         self.max_epoch = cfg.OPTIM.MAX_EPOCH
         self.output_dir = cfg.OUTPUT_DIR
-        self.dataset = dataset
+        self.classnames = classnames
         self.clip_model = self.load_clip()
         
         
@@ -131,7 +133,7 @@ class Model:
 
     def build_model(self, weight_path):
         cfg = self.cfg
-        classnames = self.dataset.classnames
+        classnames = self.classnames
         clip_model = self.clip_model
         # Building custom CLIP
         model = CustomCLIP(cfg, classnames, clip_model)
@@ -142,7 +144,7 @@ class Model:
                 param.requires_grad_(False)
 
         self.load_model_weights(model.prompt_learner, weight_path)
-        
+    
         model.to(self.device)
         # NOTE: only give prompt_learner to the optimizer
         optim = build_optimizer(model.prompt_learner, cfg.OPTIM)
@@ -162,30 +164,40 @@ class Model:
     
     def init_model(self, save_path):
         cfg = self.cfg
-        classnames = self.dataset.classnames
+        classnames = self.classnames
         clip_model = self.clip_model
         # Building custom CLIP
         model = CustomCLIP(cfg, classnames, clip_model)
     
         self.save_model(model.prompt_learner, save_path)
-        
     
-    def parse_batch_train(self, batch):
+    
+    def extract_weights(self, model):
+        weights = []
+        for name, weight in model.to(torch.device('cpu')).named_parameters():
+            if weight.requires_grad:
+                weights.append((name, weight.data))
+
+        return weights
+    
+
+    def parse_batch(self, batch):
         input_x = batch["img"]
         label = batch["label"]
         input_x = input_x.to(self.device)
         label = label.to(self.device)
         return input_x, label
-        
+    
     
     def train_model(self, client_dataloader, model, optim, sched, scaler):
         """Local training loops."""
         cfg = self.cfg
+        
         model.train()
         num_batches = len(client_dataloader)
         for epoch in range(self.max_epoch):
             for batch_idx, batch in enumerate(client_dataloader):
-                image, label = self.parse_batch_train(batch)
+                image, label = self.parse_batch(batch)
                 if cfg.PROMPT.PREC == "amp":
                     with autocast():
                         output = model(image)
@@ -220,4 +232,21 @@ class Model:
                     print(" ".join(info))
                 
         return model
+    
+    
+    @torch.no_grad()
+    def test_model(self, test_dataloader, model, lab2cname):
+        cfg = self.cfg
+        model.eval()
+        evaluator = Classification(cfg, lab2cname)
+        
+        for batch_idx, batch in enumerate(tqdm(test_dataloader)):
+            input_x, label = self.parse_batch(batch)
+            output = model(input_x)
+            evaluator.process(output, label)
+        results = evaluator.evaluate()
+
+        return list(results.values())[0]
+        
+        
     
